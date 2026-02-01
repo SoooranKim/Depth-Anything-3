@@ -129,6 +129,10 @@ def auto(
         "",
         help="[FEAT_VIS]Export features from specified layers using comma-separated indices (e.g., '0,1,2').",
     ),
+    max_images: int = typer.Option(
+        1000,
+        help="[Images] Maximum number of images to process for directory inputs (<=0 disables capping)",
+    ),
     auto_cleanup: bool = typer.Option(
         False, help="Automatically clean export directory if it exists (no prompt)"
     ),
@@ -225,7 +229,7 @@ def auto(
     elif input_type == "images":
         typer.echo("Processing directory of images...")
         # Process input - use default extensions
-        image_files = ImagesHandler.process(input_path, "png,jpg,jpeg")
+        image_files = ImagesHandler.process(input_path, "png,jpg,jpeg", max_images=max_images)
 
         # Handle export directory
         export_dir = InputHandler.handle_export_dir(export_dir, auto_cleanup)
@@ -380,7 +384,7 @@ def image(
         process_res_method=process_res_method,
         export_feat_layers=export_feat_layers,
         use_ray_pose=use_ray_pose,
-        reference_view_strategy=reference_view_strategy,
+        ref_view_strategy=ref_view_strategy,
         conf_thresh_percentile=conf_thresh_percentile,
         num_max_points=num_max_points,
         show_cameras=show_cameras,
@@ -393,6 +397,10 @@ def images(
     images_dir: str = typer.Argument(..., help="Path to directory containing input images"),
     image_extensions: str = typer.Option(
         "png,jpg,jpeg", help="Comma-separated image file extensions to process"
+    ),
+    max_images: int = typer.Option(
+        1000,
+        help="Maximum number of images to process (<=0 disables capping)",
     ),
     model_dir: str = typer.Option(DEFAULT_MODEL, help="Model directory path"),
     export_dir: str = typer.Option(DEFAULT_EXPORT_DIR, help="Export directory"),
@@ -436,7 +444,7 @@ def images(
 ):
     """Run camera pose and depth estimation on a directory of images."""
     # Process input
-    image_files = ImagesHandler.process(images_dir, image_extensions)
+    image_files = ImagesHandler.process(images_dir, image_extensions, max_images=max_images)
 
     # Handle export directory
     export_dir = InputHandler.handle_export_dir(export_dir, auto_cleanup)
@@ -459,7 +467,7 @@ def images(
         process_res_method=process_res_method,
         export_feat_layers=export_feat_layers,
         use_ray_pose=use_ray_pose,
-        reference_view_strategy=reference_view_strategy,
+        ref_view_strategy=ref_view_strategy,
         conf_thresh_percentile=conf_thresh_percentile,
         num_max_points=num_max_points,
         show_cameras=show_cameras,
@@ -546,7 +554,7 @@ def colmap(
         intrinsics=intrinsics,
         align_to_input_ext_scale=align_to_input_ext_scale,
         use_ray_pose=use_ray_pose,
-        reference_view_strategy=reference_view_strategy,
+        ref_view_strategy=ref_view_strategy,
         conf_thresh_percentile=conf_thresh_percentile,
         num_max_points=num_max_points,
         show_cameras=show_cameras,
@@ -623,7 +631,7 @@ def video(
         process_res_method=process_res_method,
         export_feat_layers=export_feat_layers,
         use_ray_pose=use_ray_pose,
-        reference_view_strategy=reference_view_strategy,
+        ref_view_strategy=ref_view_strategy,
         conf_thresh_percentile=conf_thresh_percentile,
         num_max_points=num_max_points,
         show_cameras=show_cameras,
@@ -797,6 +805,99 @@ def gallery(
     except Exception as e:
         typer.echo(f"Failed to launch Gallery server: {e}")
         raise typer.Exit(1)
+
+
+@app.command()
+def obb(
+    glb_path: str = typer.Argument(..., help="Path to a .glb (e.g., export_dir/scene.glb)"),
+    out_json: str = typer.Option(
+        "",
+        help="Output JSON path (default: <glb_dir>/obb.json)",
+    ),
+    out_glb: str = typer.Option(
+        "",
+        help="Optional output GLB path containing the original scene + OBB box (empty disables)",
+    ),
+    obb_style: str = typer.Option(
+        "wire",
+        help="OBB visualization style: wire (outline only) or solid (filled box)",
+    ),
+    obb_alpha: int = typer.Option(
+        80,
+        help="OBB color alpha (0-255). For wireframe, some viewers may ignore alpha.",
+    ),
+    include_cameras: bool = typer.Option(
+        False,
+        help="Include camera wireframe/path vertices when computing the OBB (makes box cover camera trajectory too).",
+    ),
+    include_camera_centers: bool = typer.Option(
+        False,
+        help="Include camera centers (from exports/npz/results.npz) when fitting the OBB.",
+    ),
+    camera_padding_radius: float = typer.Option(
+        0.0,
+        "--camera-padding-radius",
+        "--camera-sphere-radius",
+        help=(
+            "Expand the final OBB extents by a ratio (keeps center fixed). "
+            "Example: 0.2 expands extents by +20% (i.e., extents *= 1.2). "
+            "Alias: --camera-sphere-radius."
+        ),
+    ),
+    camera_npz_path: str = typer.Option(
+        "",
+        help="Optional explicit path to results.npz containing 'extrinsics' (world-to-cam). If empty, auto-looks under <glb_dir>/exports/{npz,mini_npz}/results.npz.",
+    ),
+    geometry_name: str = typer.Option(
+        "",
+        help="Geometry name to use from GLB (default: chooses the largest vertex geometry, usually the point cloud)",
+    ),
+    max_points: int = typer.Option(
+        2_000_000,
+        help="Max points to use (downsample for speed/memory; 0 disables downsampling)",
+    ),
+    clip_percentile: float = typer.Option(
+        0.0,
+        help="Percentile clip per-axis to reduce outliers (e.g., 1.0 keeps [1%,99%])",
+    ),
+):
+    """
+    Compute an oriented bounding box (OBB) for a point cloud stored in a GLB exported by DA3.
+    Writes OBB parameters to JSON and can optionally export a GLB overlay with the box.
+    """
+    from depth_anything_3.utils.obb import export_glb_with_obb, obb_from_glb, save_obb_json
+
+    if not out_json:
+        out_json = os.path.join(os.path.dirname(glb_path), "obb.json")
+
+    obb_obj = obb_from_glb(
+        glb_path=glb_path,
+        geometry_name=geometry_name or None,
+        max_points=None if max_points <= 0 else max_points,
+        clip_percentile=clip_percentile,
+        include_cameras=include_cameras,
+        camera_padding_radius=camera_padding_radius,
+        include_camera_centers=include_camera_centers,
+        camera_npz_path=camera_npz_path or None,
+    )
+
+    save_obb_json(obb_obj, out_json)
+    typer.echo(f"✅ OBB JSON saved: {out_json}")
+    typer.echo(f"   source_geometry: {obb_obj.source_geometry}")
+    typer.echo(f"   num_points:      {obb_obj.num_points}")
+    typer.echo(f"   center:          {obb_obj.center.tolist()}")
+    typer.echo(f"   extents:         {obb_obj.extents.tolist()}")
+
+    if out_glb:
+        a = int(max(0, min(255, obb_alpha)))
+        export_glb_with_obb(
+            glb_path,
+            obb_obj,
+            out_glb,
+            style=obb_style,
+            rgba=(255, 0, 0, a),
+        )
+        typer.echo(f"✅ OBB overlay GLB saved: {out_glb}")
 
 
 if __name__ == "__main__":

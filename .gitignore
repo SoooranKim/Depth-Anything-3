@@ -32,4 +32,26 @@ input_images*/
 .vscode
 src/debug_main.py
 temp*.png
+
+# Generated outputs
 /outputs
+/output/
+
+# Large artifacts / weights (keep out of git; use Git LFS if you must version them)
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+*.onnx
+*.engine
+*.trt
+
+# Large generated data / recon artifacts
+*.npz
+*.npy
+*.ply
+*.obj
+*.glb
+*.gltf
+*.bin
+*.db

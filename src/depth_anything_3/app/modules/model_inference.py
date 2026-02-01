@@ -68,7 +68,7 @@ class ModelInference:
         show_camera: bool = True,
         save_percentage: float = 30.0,
         num_max_points: int = 1_000_000,
-        infer_gs: bool = False,
+        infer_gs: bool = True,
         ref_view_strategy: str = "saddle_balanced",
         gs_trj_mode: str = "extend",
         gs_video_quality: str = "high",

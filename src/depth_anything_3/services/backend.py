@@ -54,6 +54,10 @@ class InferenceRequest(BaseModel):
     process_res_method: str = "upper_bound_resize"
     export_feat_layers: List[int] = []
     align_to_input_ext_scale: bool = True
+    # 3DGS / pose options
+    infer_gs: Optional[bool] = None
+    use_ray_pose: bool = False
+    ref_view_strategy: str = "saddle_balanced"
     # GLB export parameters
     conf_thresh_percentile: float = 40.0
     num_max_points: int = 1_000_000
@@ -271,6 +275,9 @@ def _run_inference_task(task_id: str):
         _tasks[task_id].progress = 0.2
 
         # Prepare inference parameters
+        infer_gs = request.infer_gs
+        if infer_gs is None:
+            infer_gs = "gs" in request.export_format
         inference_kwargs = {
             "image": request.image_paths,
             "export_format": request.export_format,
@@ -278,6 +285,9 @@ def _run_inference_task(task_id: str):
             "process_res_method": request.process_res_method,
             "export_feat_layers": request.export_feat_layers,
             "align_to_input_ext_scale": request.align_to_input_ext_scale,
+            "infer_gs": infer_gs,
+            "use_ray_pose": request.use_ray_pose,
+            "ref_view_strategy": request.ref_view_strategy,
             "conf_thresh_percentile": request.conf_thresh_percentile,
             "num_max_points": request.num_max_points,
             "show_cameras": request.show_cameras,

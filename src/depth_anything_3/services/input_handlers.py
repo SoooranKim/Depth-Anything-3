@@ -77,7 +77,9 @@ class ImagesHandler(InputHandler):
     """Image directory handler"""
 
     @staticmethod
-    def process(images_dir: str, image_extensions: str = "png,jpg,jpeg") -> List[str]:
+    def process(
+        images_dir: str, image_extensions: str = "png,jpg,jpeg", max_images: int = 1000
+    ) -> List[str]:
         """Process image directory"""
         InputHandler.validate_path(images_dir, "Images directory")
 
@@ -99,7 +101,20 @@ class ImagesHandler(InputHandler):
                 f"No image files found in {images_dir} with extensions: {extensions}"
             )
 
-        typer.echo(f"Found {len(image_files)} images to process")
+        # Cap number of images to avoid OOM / excessive runtime.
+        # If there are more than `max_images` images, uniformly sample `max_images` frames
+        # over the sorted list. Set max_images <= 0 to disable capping.
+        if max_images > 0 and len(image_files) > max_images:
+            n = len(image_files)
+            m = max_images
+            # Deterministic, includes first and last. Uses integer floor to avoid duplicates.
+            idxs = [(i * (n - 1)) // (m - 1) for i in range(m)]
+            image_files = [image_files[i] for i in idxs]
+            typer.echo(
+                f"Found {n} images; uniformly sampling to {len(image_files)} images for processing"
+            )
+        else:
+            typer.echo(f"Found {len(image_files)} images to process")
         return image_files
 
 
@@ -138,7 +153,11 @@ class ColmapHandler(InputHandler):
             extrinsics = []
             intrinsics = []
 
-            for image_id, image_data in images.items():
+            # IMPORTANT: ensure deterministic, semantically-ordered view sequence.
+            # `images` is a dict; iteration order may not match filename / frame order,
+            # which can produce wildly wrong-looking camera trajectories for gs_video
+            # (interpolation/smoothing assumes a reasonable ordering).
+            for image_id, image_data in sorted(images.items(), key=lambda kv: kv[1].name):
                 image_name = image_data.name
                 image_path = os.path.join(images_dir, image_name)
 

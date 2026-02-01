@@ -51,6 +51,7 @@ class InferenceService:
         extrinsics: Optional[np.ndarray] = None,
         intrinsics: Optional[np.ndarray] = None,
         align_to_input_ext_scale: bool = True,
+        infer_gs: Optional[bool] = None,
         use_ray_pose: bool = False,
         ref_view_strategy: str = "saddle_balanced",
         conf_thresh_percentile: float = 40.0,
@@ -61,6 +62,11 @@ class InferenceService:
         """Run local inference"""
         if export_feat_layers is None:
             export_feat_layers = []
+
+        # Auto-enable GS branch if user requests any gs-related export format.
+        # (DepthAnything3.inference asserts otherwise.)
+        if infer_gs is None:
+            infer_gs = "gs" in export_format
 
         model = self.load_model()
 
@@ -73,6 +79,7 @@ class InferenceService:
             "process_res_method": process_res_method,
             "export_feat_layers": export_feat_layers,
             "align_to_input_ext_scale": align_to_input_ext_scale,
+            "infer_gs": infer_gs,
             "use_ray_pose": use_ray_pose,
             "ref_view_strategy": ref_view_strategy,
             "conf_thresh_percentile": conf_thresh_percentile,
@@ -108,6 +115,7 @@ class InferenceService:
         extrinsics: Optional[np.ndarray] = None,
         intrinsics: Optional[np.ndarray] = None,
         align_to_input_ext_scale: bool = True,
+        infer_gs: Optional[bool] = None,
         use_ray_pose: bool = False,
         ref_view_strategy: str = "saddle_balanced",
         conf_thresh_percentile: float = 40.0,
@@ -118,6 +126,9 @@ class InferenceService:
         """Run backend inference"""
         if export_feat_layers is None:
             export_feat_layers = []
+
+        if infer_gs is None:
+            infer_gs = "gs" in export_format
 
         # Check backend status
         if not self._check_backend_status(backend_url):
@@ -132,6 +143,7 @@ class InferenceService:
             "process_res_method": process_res_method,
             "export_feat_layers": export_feat_layers,
             "align_to_input_ext_scale": align_to_input_ext_scale,
+            "infer_gs": infer_gs,
             "use_ray_pose": use_ray_pose,
             "ref_view_strategy": ref_view_strategy,
             "conf_thresh_percentile": conf_thresh_percentile,
@@ -189,6 +201,7 @@ def run_inference(
     extrinsics: Optional[np.ndarray] = None,
     intrinsics: Optional[np.ndarray] = None,
     align_to_input_ext_scale: bool = True,
+    infer_gs: Optional[bool] = None,
     use_ray_pose: bool = False,
     ref_view_strategy: str = "saddle_balanced",
     conf_thresh_percentile: float = 40.0,
@@ -212,6 +225,7 @@ def run_inference(
             extrinsics=extrinsics,
             intrinsics=intrinsics,
             align_to_input_ext_scale=align_to_input_ext_scale,
+            infer_gs=infer_gs,
             use_ray_pose=use_ray_pose,
             ref_view_strategy=ref_view_strategy,
             conf_thresh_percentile=conf_thresh_percentile,
@@ -230,6 +244,7 @@ def run_inference(
             extrinsics=extrinsics,
             intrinsics=intrinsics,
             align_to_input_ext_scale=align_to_input_ext_scale,
+            infer_gs=infer_gs,
             use_ray_pose=use_ray_pose,
             ref_view_strategy=ref_view_strategy,
             conf_thresh_percentile=conf_thresh_percentile,

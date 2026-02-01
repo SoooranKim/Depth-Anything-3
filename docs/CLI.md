@@ -10,6 +10,7 @@
   - [🗂️ images - Image Directory Processing](#images---image-directory-processing)
   - [🎬 video - Video Processing](#video---video-processing)
   - [📐 colmap - COLMAP Dataset Processing](#colmap---colmap-dataset-processing)
+  - [📦 obb - Oriented Bounding Box](#obb---oriented-bounding-box)
   - [🔧 backend - Backend Service](#backend---backend-service)
   - [🎨 gradio - Gradio Application](#gradio---gradio-application)
   - [🖼️ gallery - Gallery Server](#gallery---gallery-server)
@@ -313,6 +314,45 @@ da3 colmap ./colmap_dataset \
     --use-backend \
     --backend-url http://localhost:8008 \
     --export-dir ./output
+```
+
+---
+
+### 📦 obb - Oriented Bounding Box
+
+Compute an oriented bounding box (OBB) for a point cloud stored in a GLB exported by DA3.
+Writes OBB parameters to JSON and can optionally export a GLB overlay with the box.
+
+**Usage:**
+
+```bash
+da3 obb SCENE_GLB [OPTIONS]
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `SCENE_GLB` | str | Required | Path to a `.glb` (e.g., `export_dir/scene.glb`) |
+| `--out-json` | str | `<glb_dir>/obb.json` | Output JSON path |
+| `--out-glb` | str | `""` | Optional output GLB path containing the original scene + OBB box (empty disables) |
+| `--obb-style` | str | `wire` | OBB visualization style: `wire` or `solid` |
+| `--obb-alpha` | int | `80` | OBB color alpha (0-255). For wireframe, some viewers may ignore alpha |
+| `--include-cameras` | bool | `False` | Include camera wireframe/path vertices when computing the OBB |
+| `--camera-padding-radius` | float | `0.0` | If > 0, include camera centers when fitting the OBB, then pad final extents by +2r on each axis. Alias: `--camera-sphere-radius` |
+| `--camera-npz-path` | str | `""` | Optional explicit path to `results.npz` containing `extrinsics`. If empty, auto-looks under `<glb_dir>/exports/{npz,mini_npz}/results.npz` |
+| `--geometry-name` | str | `""` | Geometry name to use from GLB (default: chooses the largest vertex geometry) |
+| `--max-points` | int | `2000000` | Max points to use (downsample for speed/memory; 0 disables downsampling) |
+| `--clip-percentile` | float | `0.0` | Percentile clip per-axis to reduce outliers (e.g., 1.0 keeps [1%,99%]) |
+
+**Examples:**
+
+```bash
+# Compute OBB JSON
+da3 obb ./output/scene.glb --out-json ./output/obb.json
+
+# Include camera centers and pad box by r=0.5
+da3 obb ./output/scene.glb --camera-padding-radius 0.5 --out-glb ./output/scene_with_obb.glb
 ```
 
 ---
