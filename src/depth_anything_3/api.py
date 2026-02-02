@@ -21,7 +21,9 @@ inference, and export capabilities. It supports both single and nested model arc
 from __future__ import annotations
 
 import time
-from typing import Optional, Sequence
+import json
+import os
+from typing import Literal, Optional, Sequence
 import numpy as np
 import torch
 import torch.nn as nn
@@ -136,6 +138,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         extrinsics: np.ndarray | None = None,
         intrinsics: np.ndarray | None = None,
         align_to_input_ext_scale: bool = True,
+        pose_norm_mode: Literal["recenter_scale", "scale", "none"] = "recenter_scale",
+        gs_video_use_input_norm_poses: bool = False,
         infer_gs: bool = False,
         use_ray_pose: bool = False,
         ref_view_strategy: str = "saddle_balanced",
@@ -164,6 +168,12 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             extrinsics: Camera extrinsics (N, 4, 4)
             intrinsics: Camera intrinsics (N, 3, 3)
             align_to_input_ext_scale: whether to align the input pose scale to the prediction
+            pose_norm_mode: how to normalize input extrinsics before feeding the model.
+                - "recenter_scale": (default) recenter to the first view + median-distance scale normalization
+                - "scale": only median-distance scale normalization (no recenter / reorientation)
+                - "none": no extrinsics normalization
+            gs_video_use_input_norm_poses: if True, render/export gs_video using the normalized input poses
+                (ex_t_norm) instead of prediction.extrinsics / raw input COLMAP poses.
             infer_gs: Enable the 3D Gaussian branch (needed for `gs_ply`/`gs_video` exports)
             use_ray_pose: Use ray-based pose estimation instead of camera decoder (default: False)
             ref_view_strategy: Strategy for selecting reference view from multiple views.
@@ -201,7 +211,43 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         imgs, ex_t, in_t = self._prepare_model_inputs(imgs_cpu, extrinsics, intrinsics)
 
         # Normalize extrinsics
-        ex_t_norm = self._normalize_extrinsics(ex_t.clone() if ex_t is not None else None)
+        ex_t_norm = self._normalize_extrinsics(
+            ex_t.clone() if ex_t is not None else None, mode=pose_norm_mode
+        )
+
+        # If requested, render GS video using the normalized input poses.
+        # This makes gs_video pose-space consistent with the pose normalization applied to the model input.
+        if gs_video_use_input_norm_poses and render_exts is None and ex_t_norm is not None:
+            render_exts = ex_t_norm
+            if render_ixts is None and in_t is not None:
+                render_ixts = in_t
+
+        # Persist pose normalization scale for downstream render scripts.
+        # This is especially useful for rendering train gs_ply using eval/explore COLMAP poses
+        # under the same scale normalization.
+        if export_dir is not None and ex_t is not None:
+            try:
+                pose_transform, pose_scale = self._compute_pose_norm_params(
+                    ex_t, mode=pose_norm_mode
+                )
+                pose_norm_path = os.path.join(export_dir, "pose_norm.json")
+                with open(pose_norm_path, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "pose_norm_mode": pose_norm_mode,
+                            # Transform (c2w) used for recentering: ex_norm = ex @ transform
+                            # Shape: 4x4 or null.
+                            "pose_norm_transform": pose_transform,
+                            # Scale used to divide camera-center translations (after recenter if enabled).
+                            "pose_norm_scale": float(pose_scale)
+                            if pose_scale is not None
+                            else None,
+                        },
+                        f,
+                        indent=2,
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to write pose_norm.json under {export_dir}: {e}")
 
         # Run model forward pass
         export_feat_layers = list(export_feat_layers) if export_feat_layers is not None else []
@@ -324,19 +370,76 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
 
         return imgs, ex_t, in_t
 
-    def _normalize_extrinsics(self, ex_t: torch.Tensor | None) -> torch.Tensor | None:
-        """Normalize extrinsics"""
+    def _normalize_extrinsics(
+        self,
+        ex_t: torch.Tensor | None,
+        mode: Literal["recenter_scale", "scale", "none"] = "recenter_scale",
+    ) -> torch.Tensor | None:
+        """Normalize extrinsics (world-to-camera, w2c).
+
+        Notes:
+        - This normalization is applied ONLY for feeding extrinsics into the model.
+          Output alignment back to the input coordinate system is handled separately
+          by `_align_to_input_extrinsics_intrinsics`.
+        """
         if ex_t is None:
             return None
-        transform = affine_inverse(ex_t[:, :1])
-        ex_t_norm = ex_t @ transform
-        c2ws = affine_inverse(ex_t_norm)
+        if mode == "none":
+            return ex_t
+
+        if mode == "recenter_scale":
+            transform = affine_inverse(ex_t[:, :1])
+            ex_t_norm = ex_t @ transform
+            c2ws = affine_inverse(ex_t_norm)
+            translations = c2ws[..., :3, 3]
+            dists = translations.norm(dim=-1)
+            median_dist = torch.median(dists)
+            median_dist = torch.clamp(median_dist, min=1e-1)
+            ex_t_norm[..., :3, 3] = ex_t_norm[..., :3, 3] / median_dist
+            return ex_t_norm
+
+        if mode == "scale":
+            c2ws = affine_inverse(ex_t)
+            translations = c2ws[..., :3, 3]
+            dists = translations.norm(dim=-1)
+            median_dist = torch.median(dists)
+            median_dist = torch.clamp(median_dist, min=1e-1)
+            c2ws_scaled = c2ws.clone()
+            c2ws_scaled[..., :3, 3] = c2ws_scaled[..., :3, 3] / median_dist
+            return affine_inverse(c2ws_scaled)
+
+        raise ValueError(f"Unknown pose_norm_mode: {mode}")
+
+    def _compute_pose_norm_params(
+        self,
+        ex_t: torch.Tensor,
+        mode: Literal["recenter_scale", "scale", "none"] = "recenter_scale",
+    ) -> tuple[list[list[float]] | None, float | None]:
+        """Compute the (optional) recenter transform and scalar scale used by `_normalize_extrinsics`.
+
+        Returns:
+            - pose_norm_transform: 4x4 (c2w) as nested python lists, or None
+            - pose_norm_scale: python float (>= 1e-1), or None if mode == "none"
+        """
+        if mode == "none":
+            return None, None
+
+        if mode == "recenter_scale":
+            transform = affine_inverse(ex_t[:, :1])  # (B, 1, 4, 4), c2w of first view
+            ex_t_norm = ex_t @ transform
+            c2ws = affine_inverse(ex_t_norm)
+            pose_transform = transform[0, 0].detach().cpu().numpy().tolist()
+        elif mode == "scale":
+            c2ws = affine_inverse(ex_t)
+            pose_transform = None
+        else:
+            raise ValueError(f"Unknown pose_norm_mode: {mode}")
+
         translations = c2ws[..., :3, 3]
         dists = translations.norm(dim=-1)
         median_dist = torch.median(dists)
         median_dist = torch.clamp(median_dist, min=1e-1)
-        ex_t_norm[..., :3, 3] = ex_t_norm[..., :3, 3] / median_dist
-        return ex_t_norm
+        return pose_transform, float(median_dist.item())
 
     def _align_to_input_extrinsics_intrinsics(
         self,

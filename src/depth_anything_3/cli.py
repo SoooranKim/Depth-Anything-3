@@ -145,6 +145,14 @@ def auto(
     align_to_input_ext_scale: bool = typer.Option(
         True, help="[COLMAP] Align prediction to input extrinsics scale"
     ),
+    pose_norm_mode: str = typer.Option(
+        "recenter_scale",
+        help="[COLMAP] Extrinsics normalization mode before feeding the model: recenter_scale | scale | none",
+    ),
+    gs_video_use_input_norm_poses: bool = typer.Option(
+        False,
+        help="[COLMAP][GS] Render gs_video using normalized input poses (ex_t_norm) instead of prediction/original COLMAP poses",
+    ),
     # Pose estimation options
     use_ray_pose: bool = typer.Option(
         False, help="Use ray-based pose estimation instead of camera decoder"
@@ -304,6 +312,8 @@ def auto(
             extrinsics=extrinsics,
             intrinsics=intrinsics,
             align_to_input_ext_scale=align_to_input_ext_scale,
+            pose_norm_mode=pose_norm_mode,
+            gs_video_use_input_norm_poses=gs_video_use_input_norm_poses,
             use_ray_pose=use_ray_pose,
             ref_view_strategy=ref_view_strategy,
             conf_thresh_percentile=conf_thresh_percentile,
@@ -486,6 +496,14 @@ def colmap(
     align_to_input_ext_scale: bool = typer.Option(
         True, help="Align prediction to input extrinsics scale"
     ),
+    pose_norm_mode: str = typer.Option(
+        "recenter_scale",
+        help="Extrinsics normalization mode before feeding the model: recenter_scale | scale | none",
+    ),
+    gs_video_use_input_norm_poses: bool = typer.Option(
+        False,
+        help="[GS] Render gs_video using normalized input poses (ex_t_norm) instead of prediction/original COLMAP poses",
+    ),
     model_dir: str = typer.Option(DEFAULT_MODEL, help="Model directory path"),
     export_dir: str = typer.Option(DEFAULT_EXPORT_DIR, help="Export directory"),
     export_format: str = typer.Option("glb", help="Export format"),
@@ -553,6 +571,8 @@ def colmap(
         extrinsics=extrinsics,
         intrinsics=intrinsics,
         align_to_input_ext_scale=align_to_input_ext_scale,
+        pose_norm_mode=pose_norm_mode,
+        gs_video_use_input_norm_poses=gs_video_use_input_norm_poses,
         use_ray_pose=use_ray_pose,
         ref_view_strategy=ref_view_strategy,
         conf_thresh_percentile=conf_thresh_percentile,

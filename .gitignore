@@ -32,10 +32,8 @@ input_images*/
 .vscode
 src/debug_main.py
 temp*.png
-
-# Generated outputs
-/outputs
-/output/
+outputs/
+output/
 
 # Large artifacts / weights (keep out of git; use Git LFS if you must version them)
 *.ckpt

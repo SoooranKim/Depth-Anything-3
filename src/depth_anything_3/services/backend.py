@@ -54,6 +54,8 @@ class InferenceRequest(BaseModel):
     process_res_method: str = "upper_bound_resize"
     export_feat_layers: List[int] = []
     align_to_input_ext_scale: bool = True
+    pose_norm_mode: str = "recenter_scale"
+    gs_video_use_input_norm_poses: bool = False
     # 3DGS / pose options
     infer_gs: Optional[bool] = None
     use_ray_pose: bool = False
@@ -285,6 +287,8 @@ def _run_inference_task(task_id: str):
             "process_res_method": request.process_res_method,
             "export_feat_layers": request.export_feat_layers,
             "align_to_input_ext_scale": request.align_to_input_ext_scale,
+            "pose_norm_mode": request.pose_norm_mode,
+            "gs_video_use_input_norm_poses": request.gs_video_use_input_norm_poses,
             "infer_gs": infer_gs,
             "use_ray_pose": request.use_ray_pose,
             "ref_view_strategy": request.ref_view_strategy,
