@@ -123,7 +123,7 @@ class ColmapHandler(InputHandler):
 
     @staticmethod
     def process(
-        colmap_dir: str, sparse_subdir: str = ""
+        colmap_dir: str, sparse_subdir: str = "", max_images: int = 0
     ) -> Tuple[List[str], np.ndarray, np.ndarray]:
         """Process COLMAP data"""
         InputHandler.validate_path(colmap_dir, "COLMAP directory")
@@ -195,7 +195,25 @@ class ColmapHandler(InputHandler):
             if not image_files:
                 raise typer.BadParameter("No valid images found in COLMAP data")
 
-            typer.echo(f"Found {len(image_files)} valid images with pose data")
+            # Cap number of views to avoid excessive runtime / memory.
+            # If there are more than `max_images` images, uniformly sample `max_images`
+            # over the semantically ordered view list. Set max_images <= 0 to disable capping.
+            if max_images > 0 and len(image_files) > max_images:
+                n = len(image_files)
+                m = max_images
+                if m == 1:
+                    idxs = [0]
+                else:
+                    # Deterministic, includes first and last. Uses integer floor to avoid duplicates.
+                    idxs = [(i * (n - 1)) // (m - 1) for i in range(m)]
+                image_files = [image_files[i] for i in idxs]
+                extrinsics = [extrinsics[i] for i in idxs]
+                intrinsics = [intrinsics[i] for i in idxs]
+                typer.echo(
+                    f"Found {n} COLMAP images; uniformly sampling to {len(image_files)} views for processing"
+                )
+            else:
+                typer.echo(f"Found {len(image_files)} valid images with pose data")
 
             return image_files, np.array(extrinsics), np.array(intrinsics)
 

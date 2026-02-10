@@ -21,6 +21,9 @@ set -euo pipefail
 #   EXPORT_ROOT="/abs/path"            # default: ./output/we-colmap-gs
 #   MODEL_DIR="depth-anything/..."     # default: depth-anything/DA3NESTED-GIANT-LARGE-1.1
 #   EXPORT_FORMAT="gs_ply"             # e.g., "glb", "mini_npz-glb", "gs_ply"
+#   PROCESS_RES="504"                  # DA3 processing resolution (smaller => less VRAM)
+#   PROCESS_RES_METHOD="upper_bound_resize"  # DA3 resize method
+#   MAX_IMAGES="230"                   # max COLMAP views to process (<=0 disables capping)
 #   SPARSE_SUBDIR="0"                  # default: 0 (maps to sparse/0)
 #   CONF_THRESH_PERCENTILE="0"         # only relevant for GLB exports
 #   POSE_NORM_MODE="recenter_scale"    # recenter_scale | scale | none (default: recenter_scale)
@@ -41,6 +44,9 @@ Optional env vars:
   EXPORT_ROOT="/abs/path"            # default: ./output/we-colmap-gs
   MODEL_DIR="depth-anything/..."     # default: depth-anything/DA3NESTED-GIANT-LARGE-1.1
   EXPORT_FORMAT="gs_ply"             # e.g., "glb", "mini_npz-glb", "gs_ply"
+  PROCESS_RES="504"                  # DA3 processing resolution (smaller => less VRAM)
+  PROCESS_RES_METHOD="upper_bound_resize"  # DA3 resize method
+  MAX_IMAGES="230"                   # max COLMAP views to process (<=0 disables capping)
   SPARSE_SUBDIR="0"                  # default: 0 (maps to sparse/0)
   CONF_THRESH_PERCENTILE="0"         # only relevant for GLB exports
   POSE_NORM_MODE="recenter_scale"    # recenter_scale | scale | none (default: recenter_scale)
@@ -65,6 +71,9 @@ dataset_root="/media/ssd1/users/sooran/dataset/wild-explore"
 export_root="${EXPORT_ROOT:-"$repo_root/output/we-colmap-gs"}"
 model_dir="${MODEL_DIR:-"depth-anything/DA3NESTED-GIANT-LARGE-1.1"}"
 export_format="${EXPORT_FORMAT:-gs_ply}"
+process_res="${PROCESS_RES:-504}"
+process_res_method="${PROCESS_RES_METHOD:-upper_bound_resize}"
+max_images="${MAX_IMAGES:-230}"
 sparse_subdir="${SPARSE_SUBDIR:-0}"
 conf_percentile="${CONF_THRESH_PERCENTILE:-0}"
 pose_norm_mode="${POSE_NORM_MODE:-recenter_scale}"
@@ -131,6 +140,9 @@ for scene in "${scenes[@]}"; do
     --model-dir "$model_dir"
     --export-dir "$export_dir"
     --export-format "$export_format"
+    --process-res "$process_res"
+    --process-res-method "$process_res_method"
+    --max-images "$max_images"
     --conf-thresh-percentile "$conf_percentile"
     --pose-norm-mode "$pose_norm_mode"
   )

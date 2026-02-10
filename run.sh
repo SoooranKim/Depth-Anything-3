@@ -1,0 +1,2 @@
+CUDA_VISIBLE_DEVICES=0 bash run_we_render_train_gsply_explore.sh explore1 hat meetingroom2 print starbucks2 study
+CUDA_VISIBLE_DEVICES=1 bash run_we_render_train_gsply_explore.sh explore2 hat meetingroom2 print starbucks2 study

@@ -493,6 +493,10 @@ def colmap(
     sparse_subdir: str = typer.Option(
         "", help="Sparse reconstruction subdirectory (e.g., '0' for sparse/0/, empty for sparse/)"
     ),
+    max_images: int = typer.Option(
+        0,
+        help="Maximum number of COLMAP views to process (<=0 disables capping)",
+    ),
     align_to_input_ext_scale: bool = typer.Option(
         True, help="Align prediction to input extrinsics scale"
     ),
@@ -546,7 +550,9 @@ def colmap(
 ):
     """Run pose conditioned depth estimation on COLMAP data."""
     # Process input
-    image_files, extrinsics, intrinsics = ColmapHandler.process(colmap_dir, sparse_subdir)
+    image_files, extrinsics, intrinsics = ColmapHandler.process(
+        colmap_dir, sparse_subdir, max_images=max_images
+    )
 
     # Handle export directory
     export_dir = InputHandler.handle_export_dir(export_dir, auto_cleanup)
