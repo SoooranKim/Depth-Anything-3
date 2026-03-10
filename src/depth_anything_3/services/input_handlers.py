@@ -138,7 +138,7 @@ class ColmapHandler(InputHandler):
             extrinsics = []
             intrinsics = []
 
-            for image_id, image_data in images.items():
+            for image_id, image_data in sorted(images.items(), key=lambda x: x[1].name):
                 image_name = image_data.name
                 image_path = os.path.join(images_dir, image_name)
 

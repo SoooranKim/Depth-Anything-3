@@ -74,7 +74,7 @@ def export_to_gs_video(
         "dolly_zoom",
         "extend",
         "wobble_inter",
-    ] = "extend",
+    ] = "original",
     color_mode: Literal["RGB+D", "RGB+ED"] = "RGB+ED",
     vis_depth: Optional[Literal["hcat", "vcat"]] = "hcat",
     enable_tqdm: Optional[bool] = True,
@@ -87,10 +87,11 @@ def export_to_gs_video(
         tgt_extrs = extrinsics
     else:
         tgt_extrs = torch.from_numpy(prediction.extrinsics).unsqueeze(0).to(gs_world.means)
-        if prediction.is_metric:
-            scale_factor = prediction.scale_factor
-            if scale_factor is not None:
-                tgt_extrs[:, :, :3, 3] /= scale_factor
+        # NOTE: When extrinsics have been aligned to input (COLMAP) space via
+        # _align_to_input_extrinsics_intrinsics, they are already in the same
+        # coordinate frame as the Gaussians. The previous scale_factor division
+        # was needed when Gaussians stayed in normalized space, but now that
+        # Gaussians are also transformed to input space, no extra scaling is needed.
     tgt_intrs = (
         intrinsics
         if intrinsics is not None

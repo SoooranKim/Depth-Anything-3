@@ -65,10 +65,10 @@ def export_to_glb(
 ) -> str:
     """Generate a 3D point cloud and camera wireframes and export them as a ``.glb`` file.
 
-    The function builds a point cloud from the predicted depth maps, aligns it to the
-    first camera in glTF coordinates (X-right, Y-up, Z-backward), optionally draws
-    camera wireframes, and writes the result to ``scene.glb``. Auxiliary assets such as
-    depth visualizations can also be generated alongside the main export.
+    The function builds a point cloud from the predicted depth maps in COLMAP world
+    coordinates (X-right, Y-down, Z-forward), optionally draws camera wireframes,
+    and writes the result to ``scene.glb``. No CV-to-glTF coordinate transform is
+    applied, so the output shares the same coordinate frame as GS_PLY and COLMAP poses.
 
     Args:
         prediction: Model prediction containing depth, confidence, intrinsics, extrinsics,
@@ -139,14 +139,9 @@ def export_to_glb(
         conf_thr,
     )
 
-    # 5) Based on first camera orientation + glTF axis system, center by point cloud,
-    # construct alignment transform, and apply to point cloud
-    A = _compute_alignment_transform_first_cam_glTF_center_by_points(
-        prediction.extrinsics[0], points
-    )  # (4,4)
-
-    if points.shape[0] > 0:
-        points = trimesh.transform_points(points, A)
+    # 5) Keep points in COLMAP world coordinate system (no CV->glTF transform).
+    # This ensures GLB, GS_PLY, and COLMAP poses all share the same coordinate frame.
+    A = np.eye(4, dtype=np.float64)
 
     # 6) Clean + downsample
     points, colors = _filter_and_downsample(points, colors, num_max_points)

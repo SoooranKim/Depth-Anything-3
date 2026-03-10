@@ -37,6 +37,7 @@ from depth_anything_3.utils.io.input_processor import InputProcessor
 from depth_anything_3.utils.io.output_processor import OutputProcessor
 from depth_anything_3.utils.logger import logger
 from depth_anything_3.utils.pose_align import align_poses_umeyama
+from depth_anything_3.utils.sh_helpers import rotate_sh
 
 torch.backends.cudnn.benchmark = False
 # logger.info("CUDNN Benchmark Disabled")
@@ -346,11 +347,11 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         align_to_input_ext_scale: bool = True,
         ransac_view_thresh: int = 10,
     ) -> Prediction:
-        """Align depth map to input extrinsics"""
+        """Align depth map and Gaussians to input extrinsics"""
         if extrinsics is None:
             return prediction
         prediction.intrinsics = intrinsics.numpy()
-        _, _, scale, aligned_extrinsics = align_poses_umeyama(
+        rot, trans, scale, aligned_extrinsics = align_poses_umeyama(
             prediction.extrinsics,
             extrinsics.numpy(),
             ransac=len(extrinsics) >= ransac_view_thresh,
@@ -362,7 +363,76 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             prediction.depth /= scale
         else:
             prediction.extrinsics = aligned_extrinsics
+
+        # Transform Gaussians from normalized space to COLMAP (input) space
+        # Sim(3) forward: p_norm = s * R @ p_colmap + t  (COLMAP -> normalized)
+        # Sim(3) inverse: p_colmap = R^T @ (p_norm - t) / s  (normalized -> COLMAP)
+        if prediction.gaussians is not None:
+            self._transform_gaussians_to_input_space(prediction, rot, trans, scale)
+
         return prediction
+
+    def _transform_gaussians_to_input_space(
+        self,
+        prediction: Prediction,
+        rot: np.ndarray,
+        trans: np.ndarray,
+        scale: float,
+    ) -> None:
+        """Transform Gaussians from normalized space to input (COLMAP) space via inverse Sim(3).
+
+        Gaussians are created in normalized space BEFORE metric scale_factor is applied
+        to prediction.extrinsics/depth. The Sim(3) (R, t, s) is computed between the
+        metric-scaled normalized space and COLMAP space. So we must first apply
+        scale_factor to bring Gaussians into the metric-scaled space, then apply
+        the inverse Sim(3) to reach COLMAP space.
+        """
+        gs = prediction.gaussians
+        device = gs.means.device
+        dtype = gs.means.dtype
+
+        # Step 0: Apply metric scale_factor to Gaussians so they match the space
+        # of prediction.extrinsics (which had scale_factor applied in da3.py:411-412).
+        # Gaussians were created before metric scaling, so they're in a different scale.
+        sf = prediction.scale_factor
+        if sf is not None and prediction.is_metric:
+            gs.means = gs.means * sf
+            gs.scales = gs.scales * sf
+
+        R = torch.from_numpy(rot).to(device=device, dtype=dtype)       # (3,3)
+        t = torch.from_numpy(trans).to(device=device, dtype=dtype)     # (3,)
+        R_inv = R.T                                                     # (3,3)
+
+        # Step 1: Apply inverse Sim(3) to means
+        # Forward: p_metric_norm = s * R @ p_colmap + t  (COLMAP -> metric normalized)
+        # Inverse: p_colmap = (p_metric_norm - t) @ R / s  (row vector form)
+        # gs.means shape: (batch, N, 3)
+        gs.means = ((gs.means - t) @ R) / scale
+
+        # scales: linear scale, divide by Sim(3) scale
+        gs.scales = gs.scales / scale
+
+        # rotations (wxyz quaternion): apply R^T rotation
+        # quat_to_mat/mat_to_quat use xyzw convention, gs.rotations is wxyz
+        from depth_anything_3.model.utils.transform import quat_to_mat, mat_to_quat
+        orig_shape = gs.rotations.shape  # (batch, N, 4)
+        q_flat = gs.rotations.reshape(-1, 4)
+        # wxyz -> xyzw for quat_to_mat
+        q_flat_xyzw = torch.cat([q_flat[..., 1:], q_flat[..., :1]], dim=-1)
+        rot_mat = quat_to_mat(q_flat_xyzw)                # (-1, 3, 3)
+        rot_mat = R_inv.unsqueeze(0) @ rot_mat             # (-1, 3, 3)
+        q_flat_xyzw = mat_to_quat(rot_mat)                # (-1, 4) xyzw
+        # xyzw -> wxyz
+        q_flat_wxyz = torch.cat([q_flat_xyzw[..., 3:], q_flat_xyzw[..., :3]], dim=-1)
+        gs.rotations = q_flat_wxyz.reshape(orig_shape)
+
+        # harmonics (SH coefficients): rotate by R^T
+        # gs.harmonics shape: (batch, N, 3, d_sh)
+        if gs.harmonics.shape[-1] > 1:
+            R_inv_sh = R_inv.unsqueeze(0).unsqueeze(0)     # (1, 1, 3, 3)
+            gs.harmonics = rotate_sh(gs.harmonics, R_inv_sh)
+
+        # opacities: unchanged
 
     def _run_model_forward(
         self,
