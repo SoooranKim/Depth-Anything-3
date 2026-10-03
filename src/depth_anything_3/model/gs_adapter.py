@@ -160,13 +160,19 @@ class GaussianAdapter(nn.Module):
         # 2.4) 3DGS opacity
         gs_opacities = rearrange(opacities, "b v h w ... -> b (v h w) ...")
 
-        return Gaussians(
+        gs = Gaussians(
             means=gs_means_world,
             harmonics=gs_sh_world,
             opacities=gs_opacities,
             scales=gs_scales,
             rotations=gs_rotations_world,
         )
+        # Kept for the per-view transform to the input (COLMAP) frame in api.py: the Gaussians of
+        # view i were placed along the rays of cam2worlds[:, i] (predicted pose, translation scaled
+        # by pose_scales) at depth * pose_scales.
+        gs.cam2worlds_used = cam2worlds.detach()
+        gs.views_hw = (v, H, W)
+        return gs
 
     def get_scale_multiplier(
         self,

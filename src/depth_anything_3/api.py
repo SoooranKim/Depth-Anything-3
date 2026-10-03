@@ -20,6 +20,7 @@ inference, and export capabilities. It supports both single and nested model arc
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Optional, Sequence
 import numpy as np
@@ -368,9 +369,74 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         # Sim(3) forward: p_norm = s * R @ p_colmap + t  (COLMAP -> normalized)
         # Sim(3) inverse: p_colmap = R^T @ (p_norm - t) / s  (normalized -> COLMAP)
         if prediction.gaussians is not None:
-            self._transform_gaussians_to_input_space(prediction, rot, trans, scale)
+            # The Gaussians are placed along the rays of the *predicted* cameras with their translations
+            # (and the depths) multiplied by the gs_adapter's pose_scale, while prediction.extrinsics carry
+            # the metric scale_factor instead. "sim3" (the previous behaviour) fitted the Sim(3) on
+            # prediction.extrinsics and multiplied the Gaussians by scale_factor, so whenever
+            # pose_scale != scale_factor the Gaussians came out scaled/shifted against the COLMAP cameras
+            # (train-view PSNR e.g. 11 dB instead of 22 on CuratedNB table).
+            #   sim3_used (default): one Sim(3) fitted between the cameras the Gaussians were placed with and
+            #       the input cameras; keeps the views mutually consistent.
+            #   per_view: each view's Gaussians moved with its own input camera; aligned per view but the
+            #       views disagree with each other (smeared renders on dense captures).
+            mode = os.environ.get("DA3_GS_ALIGN", "sim3_used")
+            used = getattr(prediction.gaussians, "cam2worlds_used", None)
+            if mode == "per_view" and align_to_input_ext_scale and used is not None:
+                self._transform_gaussians_per_view(prediction, extrinsics.numpy(), scale)
+            elif mode == "sim3_used" and used is not None:
+                # one Sim(3) for all Gaussians, fitted between the cameras the Gaussians were actually
+                # placed with (predicted poses, translation x pose_scale) and the input cameras
+                ext_used = np.linalg.inv(used[0].double().cpu().numpy())
+                r2, t2, s2 = align_poses_umeyama(ext_used, extrinsics.numpy(), ransac=len(extrinsics) >= ransac_view_thresh,
+                                                 random_state=42)
+                self._transform_gaussians_to_input_space(prediction, r2, t2, s2, apply_metric_scale=False)
+            else:
+                self._transform_gaussians_to_input_space(prediction, rot, trans, scale)
 
         return prediction
+
+    def _transform_gaussians_per_view(self, prediction: Prediction, input_w2c: np.ndarray, scale: float) -> None:
+        """Map the Gaussians of view i from the camera they were placed with to input camera i.
+
+        In camera i the Gaussian sits at p_cam = R_used_i^T (p - t_used_i) with depth = depth_raw * pose_scale.
+        The exported depth (and scene.glb) is depth_raw * sf / scale (sf: metric factor, scale: Sim(3) scale),
+        so p_cam is rescaled by k = sf / (pose_scale * scale), with pose_scale recovered per view as
+        |t_used_i| / |t_pred_i| (both from the same predicted pose), then mapped with input c2w_i.
+        """
+        gs = prediction.gaussians
+        device, dtype = gs.means.device, gs.means.dtype
+        v, H, W = gs.views_hw
+        c2w_used = gs.cam2worlds_used[0].to(torch.float64)                       # (v, 4, 4)
+        sf = prediction.scale_factor if (prediction.scale_factor is not None and prediction.is_metric) else 1.0
+        # depth placed with the Gaussians vs the exported depth, per view (robust median over pixels)
+        R_u, t_u = c2w_used[:, :3, :3], c2w_used[:, :3, 3]
+        means = gs.means[0].reshape(v, H * W, 3).to(torch.float64)
+        z_used = torch.einsum("vij,vnj->vni", R_u.transpose(1, 2), means - t_u[:, None])[..., 2]
+        depth_out = torch.from_numpy(np.asarray(prediction.depth)).to(device=device, dtype=torch.float64).reshape(v, -1)
+        if depth_out.shape[1] != H * W:
+            raise ValueError(f"depth {tuple(prediction.depth.shape)} does not match the Gaussian grid {(v, H, W)}")
+        ok = (z_used > 1e-6) & (depth_out > 1e-6)
+        k = torch.stack([torch.median(depth_out[i][ok[i]] / z_used[i][ok[i]]) if ok[i].any() else
+                         torch.tensor(sf / scale, dtype=torch.float64, device=device) for i in range(v)])
+        w2c_in = np.tile(np.eye(4), (v, 1, 1)); w2c_in[:, :3, :4] = input_w2c[:, :3, :4]
+        c2w_in = torch.from_numpy(np.linalg.inv(w2c_in)).to(device=device, dtype=torch.float64)
+        R_in, t_in = c2w_in[:, :3, :3], c2w_in[:, :3, 3]
+        p_cam = torch.einsum("vij,vnj->vni", R_u.transpose(1, 2), means - t_u[:, None]) * k[:, None, None]
+        gs.means = (torch.einsum("vij,vnj->vni", R_in, p_cam) + t_in[:, None]).reshape(1, v * H * W, 3).to(dtype)
+        gs.scales = (gs.scales[0].reshape(v, H * W, 3) * k[:, None, None].to(gs.scales.dtype)).reshape(1, v * H * W, 3)
+        # rotation from the used world frame to the input world frame, per view
+        R_rel = torch.einsum("vij,vkj->vik", R_in, R_u).to(dtype)                 # R_in @ R_u^T
+        from depth_anything_3.model.utils.transform import mat_to_quat, quat_to_mat
+        q = gs.rotations[0].reshape(v, H * W, 4)
+        q_xyzw = torch.cat([q[..., 1:], q[..., :1]], dim=-1)
+        rot = torch.einsum("vij,vnjk->vnik", R_rel, quat_to_mat(q_xyzw.reshape(-1, 4)).reshape(v, H * W, 3, 3))
+        q_xyzw = mat_to_quat(rot.reshape(-1, 3, 3)).reshape(v, H * W, 4)
+        gs.rotations = torch.cat([q_xyzw[..., 3:], q_xyzw[..., :3]], dim=-1).reshape(1, v * H * W, 4)
+        if gs.harmonics.shape[-1] > 1:
+            sh = gs.harmonics[0].reshape(v, H * W, 3, -1)
+            sh = torch.stack([rotate_sh(sh[i], R_rel[i][None, None]) for i in range(v)])
+            gs.harmonics = sh.reshape(1, v * H * W, 3, -1)
+        logger.info(f"Gaussians moved per view to the input cameras (depth factor median {float(k.median()):.4f})")
 
     def _transform_gaussians_to_input_space(
         self,
@@ -378,6 +444,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         rot: np.ndarray,
         trans: np.ndarray,
         scale: float,
+        apply_metric_scale: bool = True,
     ) -> None:
         """Transform Gaussians from normalized space to input (COLMAP) space via inverse Sim(3).
 
@@ -395,7 +462,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         # of prediction.extrinsics (which had scale_factor applied in da3.py:411-412).
         # Gaussians were created before metric scaling, so they're in a different scale.
         sf = prediction.scale_factor
-        if sf is not None and prediction.is_metric:
+        if apply_metric_scale and sf is not None and prediction.is_metric:
             gs.means = gs.means * sf
             gs.scales = gs.scales * sf
 
