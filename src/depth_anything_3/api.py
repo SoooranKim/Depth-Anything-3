@@ -383,6 +383,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             used = getattr(prediction.gaussians, "cam2worlds_used", None)
             if mode == "per_view" and align_to_input_ext_scale and used is not None:
                 self._transform_gaussians_per_view(prediction, extrinsics.numpy(), scale)
+            elif mode == "sim3_pose" and align_to_input_ext_scale and used is not None:
+                self._transform_gaussians_pose_sim3(prediction, extrinsics.numpy())
             elif mode == "sim3_used" and used is not None:
                 # one Sim(3) for all Gaussians, fitted between the cameras the Gaussians were actually
                 # placed with (predicted poses, translation x pose_scale) and the input cameras
@@ -394,6 +396,48 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                 self._transform_gaussians_to_input_space(prediction, rot, trans, scale)
 
         return prediction
+
+    def _transform_gaussians_pose_sim3(self, prediction: Prediction, input_w2c: np.ndarray) -> None:
+        """One similarity (R, t, s) for all Gaussians, estimated from the camera *orientations* and the
+        depths instead of the camera centres (Umeyama on the centres is ill-posed when the cameras are
+        nearly collinear or static, e.g. a camera turning in place):
+            R: chordal mean of R_in_i R_used_i^T over the views
+            s: median over all pixels of exported depth / depth the Gaussian was placed at
+            t: median over the views of c_in_i - s R c_used_i
+        """
+        gs = prediction.gaussians
+        device, dtype = gs.means.device, gs.means.dtype
+        v, H, W = gs.views_hw
+        c2w_used = gs.cam2worlds_used[0].to(torch.float64)
+        R_u, t_u = c2w_used[:, :3, :3], c2w_used[:, :3, 3]
+        w2c_in = np.tile(np.eye(4), (v, 1, 1)); w2c_in[:, :3, :4] = input_w2c[:, :3, :4]
+        c2w_in = torch.from_numpy(np.linalg.inv(w2c_in)).to(device=device, dtype=torch.float64)
+        R_in, t_in = c2w_in[:, :3, :3], c2w_in[:, :3, 3]
+        M = torch.einsum("vij,vkj->ik", R_in, R_u)                              # sum_i R_in_i R_u_i^T
+        U, _, Vt = torch.linalg.svd(M)
+        D = torch.eye(3, dtype=torch.float64, device=device); D[2, 2] = torch.sign(torch.det(U @ Vt))
+        R = U @ D @ Vt
+        means = gs.means[0].reshape(v, H * W, 3).to(torch.float64)
+        z_used = torch.einsum("vij,vnj->vni", R_u.transpose(1, 2), means - t_u[:, None])[..., 2]
+        depth_out = torch.from_numpy(np.asarray(prediction.depth)).to(device=device, dtype=torch.float64).reshape(v, -1)
+        ok = (z_used > 1e-6) & (depth_out > 1e-6)
+        ratio = (depth_out[ok] / z_used[ok])
+        if ratio.numel() > 2_000_000:
+            ratio = ratio[torch.randperm(ratio.numel(), device=device)[:2_000_000]]
+        s = torch.median(ratio)
+        t = torch.median(t_in - s * (t_u @ R.T), dim=0).values
+        gs.means = (s * (gs.means[0].to(torch.float64) @ R.T) + t).to(dtype)[None]
+        gs.scales = gs.scales * s.to(gs.scales.dtype)
+        from depth_anything_3.model.utils.transform import mat_to_quat, quat_to_mat
+        q = gs.rotations[0]
+        q_xyzw = torch.cat([q[..., 1:], q[..., :1]], dim=-1)
+        rot = R.to(dtype)[None] @ quat_to_mat(q_xyzw)
+        q_xyzw = mat_to_quat(rot)
+        gs.rotations = torch.cat([q_xyzw[..., 3:], q_xyzw[..., :3]], dim=-1)[None]
+        if gs.harmonics.shape[-1] > 1:
+            gs.harmonics = rotate_sh(gs.harmonics, R.to(dtype)[None, None])
+        resid = torch.linalg.norm(t_in - (s * (t_u @ R.T) + t), dim=-1).median()
+        logger.info(f"Gaussians moved with the pose-based Sim(3): scale {float(s):.4f}, median camera-centre residual {float(resid):.4f}")
 
     def _transform_gaussians_per_view(self, prediction: Prediction, input_w2c: np.ndarray, scale: float) -> None:
         """Map the Gaussians of view i from the camera they were placed with to input camera i.
